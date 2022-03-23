@@ -4,6 +4,3 @@
 [submodule "rss_ws/src/apriltag_ros"]
 	path = rss_ws/src/apriltag_ros
 	url = git@github.com:AprilRobotics/apriltag_ros.git
-[submodule "rss_ws/src/usb_cam"]
-	path = rss_ws/src/usb_cam
-	url = git@github.com:ros-drivers/usb_cam.git
