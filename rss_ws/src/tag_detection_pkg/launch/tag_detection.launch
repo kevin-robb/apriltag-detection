@@ -1,0 +1,9 @@
+<launch>
+<!-- Start up D435 camera ROS driver. -->
+<include file="$(find realsense2_camera)/launch/rs_camera.launch" />
+<!-- Start up apriltag detection. -->
+<include file="$(find tag_detection_pkg)/launch/continuous_detection.launch" />
+<!-- Setup static TF transforms. -->
+<node pkg="tf" type="static_transform_publisher" args="0.0 0.0 0.0 0 0 0 map camera_link 100" />
+
+</launch>

@@ -1,38 +1,57 @@
 #!/usr/bin/env python3
+
+"""
+This node will handle all coordinate transformations and tf frames.
+We will predefine a certain tag as the origin of our coordinate system,
+and will ensure several tags with known relative poses are spread such that
+at least one will be visible at any given time. This will allow the camera
+to give pose of the arm relative to the coordinate system without needing
+a precise camera mount position.
+
+The goal of this node is to find and publish the pose of the end-
+effector of the arm (with one or more apriltags on it).
+This can be used as the "measurement" for an EKF whose control inputs
+are the commands provided to the arm, and it will provide an estimate
+of the true end effector position. This will help us to ensure trajectories
+for drawing are being followed as well as possible.
+"""
+
 import rospy
-# --- Messages ---
 from apriltag_ros.apriltag_ros.msg import AprilTagDetectionArray
-# --- Functions ---
 import numpy as np
-# from scipy.linalg import inv
+from scipy.linalg import inv
 from datetime import datetime
-# --- Transforms ---
 import tf2_ros
 from scipy.spatial.transform import Rotation as R
 
 ############ GLOBAL VARIABLES ###################
-filepath = None # file where tags will be saved.
-DT = 1 # period of timer that gets robot transform T_BO.
-tags = {} # dictionary of tag poses, keyed by ID.
-# --- Robot characteristics ---
-r = 0.033 # wheel radius (m).
-w = 0.16 # chassis width (m).
-# --- Transforms ---
+DT = 1 # timer period.
+
+# one tag will be used as global origin.
+ORIGIN_TAG_ID = 0 
+# other tags are static relative to origin tag, and can be used to identify it.
+STATIC_TAG_IDS = [0, 1, 2, 3]
+# NOTE: look into actually publishing static transforms between the stationary tags.
+
+# dictionary of tag poses relative to camera, keyed by tag ID.
+static_tags = {}
+dynamic_tags = {}
+
+#### TF INFO ####
 tf_listener = None
 tf_buffer = None
-T_CO = None # tf between cam and origin.
-# --- TF Frames ---
-# we can check for these with 'rosrun tf tf_monitor' while everything is running.
 TF_ORIGIN = 'map'
-# TF_ROBOT_BASE = 'base_link'
-TF_CAMERA = 'raspicam'
+TF_CAMERA = 'camera_link'
 ##########################################
+
+
+
 
 
 def get_tag_detection(tag_msg):
     """
     Detect AprilTag pose(s) relative to the camera frame.
-    @param tag_msg an AprilTagDetectionArray message containing a list of detected tags.
+    @param tag_msg: an AprilTagDetectionArray message containing a list of detected tags.
      - This list is empty but still published when no tags are detected.
     """
     # verify there is at least one tag detected.
@@ -43,53 +62,42 @@ def get_tag_detection(tag_msg):
     for i in range(len(tag_msg.detections)):
         tag_id = tag_msg.detections[i].id
         tag_pose = tag_msg.detections[i].pose.pose.pose
-        # use this to make goal pose in robot base frame.
+        # extract translation (t) and orientation quaternion (q).
         t = [tag_pose.position.x,tag_pose.position.y,tag_pose.position.z]
         q = [tag_pose.orientation.w, tag_pose.orientation.x, tag_pose.orientation.y, tag_pose.orientation.z]
         # make it into an affine matrix.
         r = R.from_quat(q).as_matrix()
-        # make affine matrix for transformation.
+        # make affine matrix for transformation. (tag relative to camera frame)
         T_AC = np.array([[r[0][0],r[0][1],r[0][2],t[0]],
                         [r[1][0],r[1][1],r[1][2],t[1]],
                         [r[2][0],r[2][1],r[2][2],t[2]],
                         [0,0,0,1]])
-        # we now have pose of tag in cam frame.
-        # print("T_AC\n{}".format(T_AC))
-
-        # calculate global pose of the tag, unless the TF failed to be setup.
-        if T_CO is None:
-            print("Found tag, but cannot create global transform.")
-            return
-        # print("T_CO\n{}".format(T_CO))
-        T_AO =T_AC@T_CO
-        # print("TAO\n{}".format(T_AO))
-
-        # strip out z-axis parts AFTER transforming, to change from SE(3) to SE(2).
-        #T_AO = np.delete(T_AO,2,0) # delete 3rd row.
-        #T_AO = np.delete(T_AO,2,1) # delete 3rd column.
-
-        # update the dictionary with this tag.
-        if tag_id in tags.keys():
-            print('UPDATING TAG: ', tag_id)
-            # update using learning rate.
-            # - use L=0 to throw away old data in favor of new.
-            L = 0.9
-            tags[tag_id] = np.add(L * tags[tag_id], (1-L) * T_AO)
-        else: 
-            print('FOUND NEW TAG: ', tag_id)
-            # create a new entry for this tag.
-            tags[tag_id] = T_AO
+        
+        # if this is a static tag that has already been detected, ignore it.
+        if tag_id in static_tags.keys(): continue
+        # if this is a static tag being detected for the first time, update all static tag poses.
+        elif tag_id in STATIC_TAG_IDS:
+            static_tags[tag_id] = T_AC
+            for id in STATIC_TAG_IDS:
+                if id == tag_id: continue
+                # get transform between detected tag and another static tag.
+                tf_tag_to_detected = get_transform(TF_TO="tag"+str(id), TF_FROM="tag"+str(tag_id))
+                # calculate transform between the non-detected static tag and the camera.
+                tf_tag_to_cam = T_AC @ tf_tag_to_detected
+                static_tags[id] = tf_tag_to_cam
+        else:
+            # add/update one of the dynamic tags. TODO
+            pass
 
 
-def get_transform(TF_TO, TF_FROM):
-    global tf_buffer
+def get_transform(TF_TO:str, TF_FROM:str):
     """
     Get the expected transform from tf.
     Use translation and quaternion from tf to construct a pose in SE(3).
     """
     try:
         # get most recent relative pose from the tf service.
-        pose = tf_buffer.lookup_transform(TF_TO, TF_FROM,rospy.Time(0), rospy.Duration(4))
+        pose = tf_buffer.lookup_transform(TF_TO, TF_FROM, rospy.Time(0), rospy.Duration(4))
     except Exception as e:
         # requested transform was not found.
         print("Transform from " + TF_FROM + " to " + TF_TO + " not found.")
@@ -97,61 +105,29 @@ def get_transform(TF_TO, TF_FROM):
         return None
     
     # extract translation and quaternion from tf pose.
-    transformT = [pose.transform.translation.x, pose.transform.translation.y, pose.transform.translation.z]
-    transformQ = (
-        pose.transform.rotation.x,
-        pose.transform.rotation.y,
-        pose.transform.rotation.z,
-        pose.transform.rotation.w)
+    t = [pose.transform.translation.x, pose.transform.translation.y, pose.transform.translation.z]
+    q = (pose.transform.rotation.x, pose.transform.rotation.y, pose.transform.rotation.z, pose.transform.rotation.w)
     # get equiv rotation matrix from quaternion.
-    r = R.from_quat(transformQ).as_matrix()
+    r = R.from_quat(q).as_matrix()
 
     # make affine matrix for transformation.
-    return np.array([[r[0][0],r[0][1],r[0][2],transformT[0]],
-                    [r[1][0],r[1][1],r[1][2],transformT[1]],
-                    [r[2][0],r[2][1],r[2][2],transformT[2]],
+    return np.array([[r[0][0],r[0][1],r[0][2],t[0]],
+                    [r[1][0],r[1][1],r[1][2],t[1]],
+                    [r[2][0],r[2][1],r[2][2],t[2]],
                     [0,0,0,1]])
 
 
 def timer_callback(event):
     """
-    Update T_CO with newest pose from Cartographer.
-    Save tags to file.
+    Publish our current knowledge of the pose of the end-effector.
     """
-    global T_CO
-    T_CO = get_transform(TF_TO=TF_CAMERA, TF_FROM=TF_ORIGIN)
-    # save tags to file.
-    save_tags_to_file(tags)
+    # TODO
+    pass
     
 
-def save_tags_to_file(tags):
-    """
-    We created a file whose name is the current time when the node is launched.
-    All tags and IDs are saved to this file.
-    This will recreate the file every timestep, so when the node ends, 
-        the file should reflect the most updated set of tag poses.
-    """
-    if not tags:
-        # don't create the file if there aren't any tags detected yet.
-        return
-    data_for_file = []
-    for id in tags.keys():
-        print(id, tags[id]) # print to console for debugging.
-        data_for_file.append("id: " + str(id))
-        for row in tags[id]:
-            data_for_file.append(list(row))
-        data_for_file.append("---------------------------------------")
-    np.savetxt(filepath, data_for_file, fmt="%s", delimiter=",")
-
-
 def main():
-    global tf_listener, tf_buffer, filepath
+    global tf_listener, tf_buffer
     rospy.init_node('tag_tracking_node')
-
-    # generate filepath that tags will be written to.
-    dt = datetime.now()
-    run_id = dt.strftime("%Y-%m-%d-%H-%M-%S")
-    filepath = "tags_" + str(run_id) + ".txt"
 
     # setup TF service.
     tf_buffer = tf2_ros.Buffer(cache_time=rospy.Duration(1))
@@ -159,6 +135,8 @@ def main():
 
     # subscribe to apriltag detections.
     rospy.Subscriber("/tag_detections", AprilTagDetectionArray, get_tag_detection, queue_size=1)
+
+    # TODO create publisher for end effector pose relative to origin.
 
     rospy.Timer(rospy.Duration(DT), timer_callback)
     rospy.spin()

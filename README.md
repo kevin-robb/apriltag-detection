@@ -15,5 +15,6 @@ Running it:
  - OPTIONAL: Now open rviz by simply typing `rviz` into the terminal. Click "Add", select "By topic", and choose "/camera/color/image_raw" Camera to see the RGB image, and/or "/camera/depth/image_rect_raw" Camera and DepthCloud to see the image with depth information, and this depth projected on the 3D vizualizer, respectively.
  - Start apriltag detection with our copy of the provided launch file: `roslaunch tag_detection_pkg continuous_detection.launch`. The camera topic can be changed on the command line by appending the arguments `camera_name:=/camera/color image_topic:=image_raw` to the roslaunch call (args shown are default, and work for the D435).
  - OPTIONAL: `rosrun rqt_image_view rqt_image_view` opens an image viewer that allows the image topic to be selected from all available. This is an easy way to see detected tags overlaid on the camera feed by selecting the "/tag_detections/image" topic.
+ - OPTIONAL: `rosrun tf tf_monitor` can help determine names and connections between published TF frames.
 
 ![A 3D DepthCloud shown in rviz.](kevin_is_a_pointcloud.png)
