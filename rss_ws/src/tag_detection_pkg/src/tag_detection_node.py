@@ -20,7 +20,6 @@ import rospy
 from apriltag_ros.apriltag_ros.msg import AprilTagDetectionArray
 import numpy as np
 from scipy.linalg import inv
-from datetime import datetime
 import tf2_ros
 from scipy.spatial.transform import Rotation as R
 
@@ -37,15 +36,12 @@ STATIC_TAG_IDS = [0, 1, 2, 3]
 static_tags = {}
 dynamic_tags = {}
 
-#### TF INFO ####
+########### TF INFO ############
 tf_listener = None
 tf_buffer = None
 TF_ORIGIN = 'map'
 TF_CAMERA = 'camera_link'
 ##########################################
-
-
-
 
 
 def get_tag_detection(tag_msg):
